@@ -1,0 +1,46 @@
+# Datos y archivos grandes
+/data/libros_word
+/venv311
+/fragmentos
+embeddings.pkl
+
+# Credenciales y variables de entorno
+.env
+*.env
+.env.local
+.env.production
+.env.development
+
+# Archivos con credenciales
+data/libros_word/api.txt
+**/api.txt
+
+# Archivos de configuración local
+config.ini
+secrets.json
+credentials.json
+
+# Logs y archivos temporales
+*.log
+*.tmp
+*.temp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+/data
+/venv
+fragmentos_metadata.json
