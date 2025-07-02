@@ -10,7 +10,7 @@ FUNCIONALIDADES:
 - Divide texto en fragmentos inteligentes (~500 palabras)
 - Preserva estructura semántica de párrafos
 - Genera metadatos detallados por fragmento
-- Crea archivos individuales y metadatos JSON
+- Crea archivo JSON con todos los fragmentos y metadatos
 
 REQUISITOS:
 - Documentos Word en carpeta data/libros_word/
@@ -204,9 +204,8 @@ def main():
     1. Define la configuración de libros a procesar
     2. Procesa cada libro individualmente
     3. Combina todos los fragmentos
-    4. Crea archivos individuales por fragmento
-    5. Genera archivo de metadatos JSON
-    6. Proporciona estadísticas detalladas
+    4. Genera archivo de metadatos JSON con texto completo
+    5. Proporciona estadísticas detalladas
     
     Para agregar nuevos libros, modifica la lista libros_config.
     """
@@ -242,19 +241,8 @@ def main():
         print("❌ No se pudieron procesar fragmentos de ningún libro")
         return
     
-    # Crear directorio de fragmentos
-    fragmentos_dir = os.path.join(project_root, "data", "fragmentos")
-    os.makedirs(fragmentos_dir, exist_ok=True)
-    
-    # Guardar fragmentos individuales
-    for fragmento in todos_los_fragmentos:
-        nombre_archivo = f"{fragmento['id']}_{fragmento['palabras']}palabras.txt"
-        ruta_completa = os.path.join(fragmentos_dir, nombre_archivo)
-        with open(ruta_completa, "w", encoding="utf-8") as f:
-            f.write(fragmento["texto"])
-    
-    # Guardar metadatos completos
-    metadata_file = os.path.join(project_root, "fragmentos_metadata.json")
+    # Guardar metadatos completos con texto incluido
+    metadata_file = os.path.join(project_root, "data", "fragmentos_metadata.json")
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(todos_los_fragmentos, f, ensure_ascii=False, indent=2)
     
@@ -276,9 +264,8 @@ def main():
     for libro, stats in libros_stats.items():
         print(f"   - {libro}: {stats['fragmentos']} fragmentos, {stats['palabras']} palabras")
     
-    print(f"\n💾 Archivos generados:")
-    print(f"   - Fragmentos individuales en carpeta '{fragmentos_dir}'")
-    print(f"   - Metadatos completos en '{metadata_file}'")
+    print(f"\n💾 Archivo generado:")
+    print(f"   - Metadatos completos con texto en '{metadata_file}'")
 
 if __name__ == "__main__":
     main()

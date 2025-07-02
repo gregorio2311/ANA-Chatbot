@@ -14,7 +14,6 @@ FUNCIONALIDADES:
 
 REQUISITOS:
 - Archivo fragmentos_metadata.json generado por frag.py
-- Carpeta fragmentos/ con archivos de texto
 - GPU recomendada para mejor rendimiento (opcional)
 
 USO:
@@ -51,8 +50,6 @@ AUTOR: Equipo de desarrollo ANA-Chatbot
 FECHA: 2024
 """
 
-# 1_crear_embeddings
-
 from sentence_transformers import SentenceTransformer
 import os
 import pickle
@@ -68,7 +65,7 @@ def crear_embeddings():
     1. Verifica disponibilidad de GPU
     2. Carga el modelo de embeddings
     3. Valida archivos de entrada
-    4. Procesa fragmentos de texto
+    4. Procesa fragmentos de texto desde JSON
     5. Genera embeddings semánticos
     6. Guarda resultados con metadatos
     
@@ -97,7 +94,7 @@ def crear_embeddings():
         model = SentenceTransformer("BAAI/bge-large-en-v1.5")
         
         # Verificar que existe el archivo de metadatos
-        metadata_file = os.path.join(project_root, "fragmentos_metadata.json")
+        metadata_file = os.path.join(project_root, "data", "fragmentos_metadata.json")
         if not os.path.exists(metadata_file):
             print(f"❌ Error: El archivo '{metadata_file}' no existe")
             print("💡 Ejecuta primero el script frag.py para generar los fragmentos")
@@ -114,33 +111,16 @@ def crear_embeddings():
             
         print(f"📄 Encontrados {len(fragmentos)} fragmentos para procesar")
         
-        # Verificar que los archivos de fragmentos existen
-        carpeta = os.path.join(project_root, "data", "fragmentos")
-        if not os.path.exists(carpeta):
-            print(f"❌ Error: La carpeta '{carpeta}' no existe")
-            return False
-        
-        # Filtrar fragmentos válidos y cargar textos
+        # Validar que los fragmentos tienen el texto completo
         fragmentos_validos = []
         for fragmento in fragmentos:
-            archivo_fragmento = f"{fragmento['id']}_{fragmento['palabras']}palabras.txt"
-            ruta_completa = os.path.join(carpeta, archivo_fragmento)
-            
-            if os.path.exists(ruta_completa):
-                try:
-                    with open(ruta_completa, "r", encoding="utf-8") as f:
-                        texto = f.read().strip()
-                        if texto:  # Solo agregar si no está vacío
-                            fragmento["texto"] = texto
-                            fragmentos_validos.append(fragmento)
-                except Exception as e:
-                    print(f"⚠️ Error leyendo {archivo_fragmento}: {e}")
-                    continue
+            if "texto" in fragmento and fragmento["texto"].strip():
+                fragmentos_validos.append(fragmento)
             else:
-                print(f"⚠️ Archivo no encontrado: {archivo_fragmento}")
+                print(f"⚠️ Fragmento {fragmento.get('id', 'desconocido')} no tiene texto válido")
         
         if not fragmentos_validos:
-            print("❌ Error: No se pudieron leer fragmentos válidos")
+            print("❌ Error: No se encontraron fragmentos con texto válido")
             return False
         
         # Estadísticas por libro
@@ -156,7 +136,7 @@ def crear_embeddings():
         for libro, stats in libros_stats.items():
             print(f"   - {libro}: {stats['fragmentos']} fragmentos, {stats['palabras']} palabras")
         
-        # Generar embeddings
+        # Generar embeddings usando texto del JSON
         print("\n🧠 Generando embeddings...")
         texts = [f["texto"] for f in fragmentos_validos]
         embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
