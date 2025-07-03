@@ -45,6 +45,7 @@ FECHA: 2024
 
 import os
 import logging
+import json
 from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone
@@ -70,6 +71,7 @@ class SemanticSearch:
         index_name (str): Nombre del índice en Pinecone
         model (SentenceTransformer): Modelo para generar embeddings
         index (Pinecone.Index): Índice de Pinecone para búsquedas
+        fragmentos_originales (List[Dict]): Fragmentos originales cargados del JSON
     """
     
     def __init__(self):
@@ -115,9 +117,70 @@ class SemanticSearch:
             stats = self.index.describe_index_stats()
             logger.info(f"Estadísticas del índice: {stats}")
             
+            # Cargar fragmentos originales desde JSON
+            self.cargar_fragmentos_originales()
+            
         except Exception as e:
             logger.error(f"Error al inicializar el sistema: {e}")
             raise
+    
+    def cargar_fragmentos_originales(self):
+        """
+        Carga los fragmentos originales desde el archivo JSON para recuperar el texto completo.
+        """
+        try:
+            # Buscar el archivo JSON en diferentes ubicaciones posibles
+            posibles_rutas = [
+                "data/fragmentos_metadata.json",
+                "../data/fragmentos_metadata.json",
+                "scripts/../data/fragmentos_metadata.json"
+            ]
+            
+            fragmentos_file = None
+            for ruta in posibles_rutas:
+                if os.path.exists(ruta):
+                    fragmentos_file = ruta
+                    break
+            
+            if not fragmentos_file:
+                logger.warning("No se encontró el archivo fragmentos_metadata.json")
+                self.fragmentos_originales = []
+                return
+            
+            logger.info(f"Cargando fragmentos originales desde: {fragmentos_file}")
+            with open(fragmentos_file, 'r', encoding='utf-8') as f:
+                self.fragmentos_originales = json.load(f)
+            
+            logger.info(f"Cargados {len(self.fragmentos_originales)} fragmentos originales")
+            
+        except Exception as e:
+            logger.error(f"Error cargando fragmentos originales: {e}")
+            self.fragmentos_originales = []
+    
+    def obtener_texto_original(self, indice_global) -> str:
+        """
+        Obtiene el texto original de un fragmento usando su índice global.
+        
+        Args:
+            indice_global: Índice del fragmento en la lista original (puede ser int o float)
+            
+        Returns:
+            str: Texto original del fragmento o mensaje de error
+        """
+        try:
+            # Convertir a entero si es necesario
+            if isinstance(indice_global, float):
+                indice_global = int(indice_global)
+            elif not isinstance(indice_global, int):
+                return f"Error: Tipo de índice inválido: {type(indice_global)}"
+            
+            if 0 <= indice_global < len(self.fragmentos_originales):
+                return self.fragmentos_originales[indice_global].get("texto", "Texto no disponible")
+            else:
+                return f"Error: Índice {indice_global} fuera de rango (0-{len(self.fragmentos_originales)-1})"
+        except Exception as e:
+            logger.error(f"Error obteniendo texto original: {e}")
+            return "Error al recuperar texto original"
     
     def search(self, query: str, top_k: int = 5, libro_filtro: str | None = None) -> List[Dict[str, Any]]:
         """
@@ -184,10 +247,21 @@ class SemanticSearch:
             >>> print(f"Libros disponibles: {libros}")
         """
         try:
-            # Realizar una búsqueda vacía para obtener metadatos
+            # Obtener estadísticas del índice para saber cuántos vectores hay
+            stats = self.index.describe_index_stats()
+            total_vectors = stats.get('total_vector_count', 0)
+            
+            if total_vectors == 0:
+                logger.warning("No hay vectores en el índice")
+                return []
+            
+            # Realizar una búsqueda con un vector vacío para obtener múltiples resultados
+            # Usar un número alto para asegurar que obtenemos muestras de todos los libros
+            sample_size = min(100, total_vectors)  # Tomar hasta 100 muestras
+            
             results = self.index.query(
                 vector=[0.0] * 1024,  # Vector vacío
-                top_k=1,
+                top_k=sample_size,
                 include_metadata=True
             )
             
@@ -198,11 +272,23 @@ class SemanticSearch:
                 if libro:
                     libros.add(libro)
             
-            return list(libros)
+            logger.info(f"Encontrados {len(libros)} libros únicos en {sample_size} muestras")
+            return sorted(list(libros))  # Ordenar alfabéticamente
             
         except Exception as e:
             logger.error(f"Error obteniendo libros disponibles: {e}")
-            return []
+            # Como fallback, intentar obtener libros desde el JSON local
+            try:
+                libros_local = set()
+                for fragmento in self.fragmentos_originales:
+                    libro = fragmento.get("libro")
+                    if libro:
+                        libros_local.add(libro)
+                logger.info(f"Usando libros del JSON local: {len(libros_local)} libros")
+                return sorted(list(libros_local))
+            except Exception as e2:
+                logger.error(f"Error obteniendo libros del JSON local: {e2}")
+                return []
     
     def display_results(self, matches: List[Dict[str, Any]]):
         """
@@ -225,7 +311,15 @@ class SemanticSearch:
             print(f"Libro: {match['metadata'].get('libro', 'Desconocido')}")
             print(f"Fragmento ID: {match['metadata'].get('fragmento_id', 'N/A')}")
             print(f"Palabras: {match['metadata'].get('palabras', 0)}")
-            print(f"Texto: {match['metadata']['texto']}")
+            
+            # Obtener texto original usando el índice global
+            indice_global = match['metadata'].get('indice_global', -1)
+            if indice_global >= 0:
+                texto_original = self.obtener_texto_original(indice_global)
+                print(f"Texto: {texto_original}")
+            else:
+                print("Texto: No disponible (índice no encontrado)")
+            
             print("-" * 60)
 
 def main():

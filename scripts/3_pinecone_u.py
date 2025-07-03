@@ -168,21 +168,15 @@ def preparar_datos(fragmentos: List[Dict], embeddings: List) -> List[Dict]:
         try:
             fragmento = fragmentos[i]
             id_fragmento = fragmento["id"]
-            texto_original = fragmento["texto"]
             libro = fragmento.get("libro", "desconocido")
             
-            texto_limpio = texto_original.strip()
-            if not texto_limpio:
-                print(f"⚠️ Fragmento {id_fragmento} está vacío, saltando...")
-                continue
-                
+            # Solo guardar metadatos esenciales para evitar límite de tamaño
             metadata = {
-                "texto": texto_limpio,
-                "longitud": len(texto_limpio),
                 "fragmento_id": id_fragmento,
                 "libro": libro,
                 "palabras": fragmento.get("palabras", 0),
-                "indice": fragmento.get("indice", 0)
+                "indice": fragmento.get("indice", 0),
+                "indice_global": i  # Índice para buscar en el JSON original
             }
             
             items.append({

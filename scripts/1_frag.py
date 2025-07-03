@@ -26,31 +26,37 @@ FLUJO DE TRABAJO:
     3. Subir a Pinecone → pinecone_u.py
     4. Usar chatbot → consulta.py
 
-CONFIGURACIÓN DE LIBROS:
-    libros_config = [
-        {
-            "archivo": "data/libros_word/G_A_S_4_E.docx",
-            "nombre": "G_A_S_4_E"
-        },
-        {
-            "archivo": "data/libros_word/LIBRO_IFSSA.docx", 
-            "nombre": "LIBRO_IFSSA"
-        }
-    ]
+DETECCIÓN AUTOMÁTICA DE LIBROS:
+    El script detecta automáticamente todos los archivos .docx en la carpeta data/libros_word/
+    No es necesario configurar manualmente los libros.
+    
+    Ejemplo de archivos detectados:
+    - data/libros_word/G_A_S_4_E.docx
+    - data/libros_word/LIBRO_IFSSA.docx
+    - data/libros_word/Principios-de-Anatomia-y-Fisiologia-Tortora-Derrickson.docx
 
 EJEMPLO DE SALIDA:
+    📚 Se encontraron 3 libros para procesar:
+       - G_A_S_4_E
+       - LIBRO_IFSSA
+       - Principios-de-Anatomia-y-Fisiologia-Tortora-Derrickson
+    
     🚀 Iniciando procesamiento de múltiples libros...
     📖 Cargando documento: G_A_S_4_E
     ✅ Texto extraído de G_A_S_4_E: 75000 palabras
     ✂️ Creando fragmentos...
     ✅ Se crearon 150 fragmentos para G_A_S_4_E
+    📖 Cargando documento: LIBRO_IFSSA
+    ✅ Texto extraído de LIBRO_IFSSA: 65000 palabras
+    ✂️ Creando fragmentos...
+    ✅ Se crearon 130 fragmentos para LIBRO_IFSSA
     🎉 Procesamiento completado exitosamente
     📊 Estadísticas generales:
-       - Total de fragmentos: 300
-       - Total de palabras: 150000
+       - Total de fragmentos: 280
+       - Total de palabras: 140000
     📚 Estadísticas por libro:
        - G_A_S_4_E: 150 fragmentos, 75000 palabras
-       - LIBRO_IFSSA: 150 fragmentos, 75000 palabras
+       - LIBRO_IFSSA: 130 fragmentos, 65000 palabras
 
 DEPENDENCIAS:
 - python-docx: Para procesar documentos Word
@@ -201,41 +207,55 @@ def main():
     Función principal que procesa múltiples libros de anatomía.
     
     Esta función:
-    1. Define la configuración de libros a procesar
+    1. Detecta automáticamente todos los archivos .docx en la carpeta libros_word
     2. Procesa cada libro individualmente
     3. Combina todos los fragmentos
     4. Genera archivo de metadatos JSON con texto completo
     5. Proporciona estadísticas detalladas
     
-    Para agregar nuevos libros, modifica la lista libros_config.
+    Los libros se procesan automáticamente sin necesidad de configuración manual.
     """
     # Obtener la ruta del directorio raíz del proyecto
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
+    libros_dir = os.path.join(project_root, "data", "libros_word")
     
-    # Configuración de libros
-    libros_config = [
-        {
-            "archivo": os.path.join(project_root, "data", "libros_word", "G_A_S_4_E.docx"),
-            "nombre": "G_A_S_4_E"
-        }
-    ]
+    # Verificar que existe la carpeta de libros
+    if not os.path.exists(libros_dir):
+        print(f"❌ Error: No se encontró la carpeta de libros en {libros_dir}")
+        return
+    
+    # Detectar automáticamente todos los archivos .docx
+    archivos_docx = []
+    for archivo in os.listdir(libros_dir):
+        if archivo.lower().endswith('.docx'):
+            ruta_completa = os.path.join(libros_dir, archivo)
+            nombre_libro = os.path.splitext(archivo)[0]  # Remover extensión .docx
+            archivos_docx.append({
+                "archivo": ruta_completa,
+                "nombre": nombre_libro
+            })
+    
+    if not archivos_docx:
+        print(f"❌ No se encontraron archivos .docx en {libros_dir}")
+        return
+    
+    print(f"📚 Se encontraron {len(archivos_docx)} libros para procesar:")
+    for libro in archivos_docx:
+        print(f"   - {libro['nombre']}")
     
     max_palabras = 500
     todos_los_fragmentos = []
     
-    print("🚀 Iniciando procesamiento de múltiples libros...")
+    print("\n🚀 Iniciando procesamiento de múltiples libros...")
     
     # Procesar cada libro
-    for libro_config in libros_config:
+    for libro_config in archivos_docx:
         archivo = libro_config["archivo"]
         nombre = libro_config["nombre"]
         
-        if os.path.exists(archivo):
-            fragmentos = procesar_libro(archivo, nombre, max_palabras)
-            todos_los_fragmentos.extend(fragmentos)
-        else:
-            print(f"⚠️ Archivo no encontrado: {archivo}")
+        fragmentos = procesar_libro(archivo, nombre, max_palabras)
+        todos_los_fragmentos.extend(fragmentos)
     
     if not todos_los_fragmentos:
         print("❌ No se pudieron procesar fragmentos de ningún libro")
