@@ -44,3 +44,4 @@ Thumbs.db
 /data
 /venv
 fragmentos_metadata.json
+scripts/embeddings_mejorados.pkl

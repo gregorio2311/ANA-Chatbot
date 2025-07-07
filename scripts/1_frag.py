@@ -1,291 +1,412 @@
 """
-PROCESADOR DE FRAGMENTOS - ANA-CHATBOT
-=====================================
+EXTRACTOR MEJORADO DE TEXTO - ANA-CHATBOT
+=========================================
 
-Este script procesa documentos Word (.docx) de anatomía y los divide en fragmentos
-de texto optimizados para búsqueda semántica. Es el primer paso del pipeline.
+Este script implementa una extracción de texto mejorada usando PyMuPDF (fitz)
+con las siguientes mejoras:
+
+1. Extracción por secciones usando el índice
+2. División en subsecciones usando títulos
+3. Limpieza inteligente de texto
+4. Chunking optimizado para BGE-m3
+5. Formato JSON estructurado
 
 FUNCIONALIDADES:
-- Extrae texto de documentos Word (.docx)
-- Divide texto en fragmentos inteligentes (~500 palabras)
-- Preserva estructura semántica de párrafos
-- Genera metadatos detallados por fragmento
-- Crea archivo JSON con todos los fragmentos y metadatos
+- Extrae texto de PDFs usando PyMuPDF
+- Detecta secciones y subsecciones automáticamente
+- Limpia texto eliminando elementos repetitivos
+- Crea chunks de 500-1000 tokens con overlap del 20%
+- Genera metadatos estructurados
+- Soporta tanto diapositivas como manuales
 
 REQUISITOS:
-- Documentos Word en carpeta data/libros_word/
-- Configuración de libros en el script
-- python-docx instalado
+- PyMuPDF (fitz) instalado
+- PDFs en data/ana_fun/
+- Estructura: diapos/ (diapositivas) y man/ (manuales)
 
 USO:
-    python scripts/frag.py
+    python scripts/1_frag_mejorado.py
 
 FLUJO DE TRABAJO:
-    1. Procesar documentos → frag.py (este script)
-    2. Generar embeddings → embeddings.py
-    3. Subir a Pinecone → pinecone_u.py
-    4. Usar chatbot → consulta.py
-
-DETECCIÓN AUTOMÁTICA DE LIBROS:
-    El script detecta automáticamente todos los archivos .docx en la carpeta data/libros_word/
-    No es necesario configurar manualmente los libros.
-    
-    Ejemplo de archivos detectados:
-    - data/libros_word/G_A_S_4_E.docx
-    - data/libros_word/LIBRO_IFSSA.docx
-    - data/libros_word/Principios-de-Anatomia-y-Fisiologia-Tortora-Derrickson.docx
-
-EJEMPLO DE SALIDA:
-    📚 Se encontraron 3 libros para procesar:
-       - G_A_S_4_E
-       - LIBRO_IFSSA
-       - Principios-de-Anatomia-y-Fisiologia-Tortora-Derrickson
-    
-    🚀 Iniciando procesamiento de múltiples libros...
-    📖 Cargando documento: G_A_S_4_E
-    ✅ Texto extraído de G_A_S_4_E: 75000 palabras
-    ✂️ Creando fragmentos...
-    ✅ Se crearon 150 fragmentos para G_A_S_4_E
-    📖 Cargando documento: LIBRO_IFSSA
-    ✅ Texto extraído de LIBRO_IFSSA: 65000 palabras
-    ✂️ Creando fragmentos...
-    ✅ Se crearon 130 fragmentos para LIBRO_IFSSA
-    🎉 Procesamiento completado exitosamente
-    📊 Estadísticas generales:
-       - Total de fragmentos: 280
-       - Total de palabras: 140000
-    📚 Estadísticas por libro:
-       - G_A_S_4_E: 150 fragmentos, 75000 palabras
-       - LIBRO_IFSSA: 130 fragmentos, 65000 palabras
-
-DEPENDENCIAS:
-- python-docx: Para procesar documentos Word
-- re: Para limpieza de texto
-- json: Para guardar metadatos
+    1. Extraer texto por secciones → 1_frag_mejorado.py (este script)
+    2. Generar embeddings → 2_embeddings.py
+    3. Subir a Pinecone → 3_pinecone_u.py
+    4. Usar chatbot → 4_consulta.py
 
 AUTOR: Equipo de desarrollo ANA-Chatbot
 FECHA: 2024
 """
 
 import os
-from docx import Document
 import re
 import json
+import fitz  # PyMuPDF
+from typing import List, Dict, Any, Tuple
+from dataclasses import dataclass
+import logging
 
-def limpiar_texto(texto):
-    """
-    Limpia el texto eliminando caracteres especiales y normalizando espacios.
-    
-    Args:
-        texto (str): Texto original a limpiar
-        
-    Returns:
-        str: Texto limpio y normalizado
-        
-    Example:
-        >>> texto_sucio = "Hola   mundo!!!   "
-        >>> texto_limpio = limpiar_texto(texto_sucio)
-        >>> print(texto_limpio)  # "Hola mundo"
-    """
-    texto = re.sub(r'[^\w\s\.\,\;\:\!\?\-\(\)áéíóúüñÁÉÍÓÚÜÑ]', ' ', texto)
-    texto = re.sub(r'\s+', ' ', texto)
-    return texto.strip()
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def dividir_texto_inteligente(texto, max_palabras=500):
-    """
-    Divide el texto en fragmentos inteligentes preservando la estructura semántica.
+@dataclass
+class TextChunk:
+    """Estructura para representar un chunk de texto procesado."""
+    id: str
+    source: str
+    section: str
+    subsection: str
+    page_number: int
+    text: str
+    metadata: Dict[str, Any]
+
+class TextExtractor:
+    """Extractor de texto mejorado usando PyMuPDF."""
     
-    Args:
-        texto (str): Texto completo a dividir
-        max_palabras (int): Número máximo de palabras por fragmento. Default: 500
+    def __init__(self):
+        self.patterns_to_remove = [
+            # Encabezados y pies de página repetitivos
+            r'Netter.*Atlas of Human Anatomy',
+            r'Complemento Anatomía Funcional Humana',
+            r'Universidad.*Anáhuac',
+            r'Facultad.*Medicina',
+            
+            # URLs
+            r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+',
+            r'www\.[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+            
+            # Créditos de figuras repetitivos
+            r'Netter, F\. H\.: Atlas of Human Anatomy.*?\.',
+            r'Figura \d+.*?Netter',
+            
+            # Numeración de páginas innecesaria
+            r'Página \d+',
+            r'Page \d+',
+            
+            # Caracteres especiales problemáticos
+            r'[^\w\s\.\,\;\:\!\?\-\(\)áéíóúüñÁÉÍÓÚÜÑ]',
+        ]
         
-    Returns:
-        List[str]: Lista de fragmentos de texto
+        # Patrones para detectar títulos de secciones
+        self.section_patterns = [
+            r'^(\d+\.\s*)([A-ZÁÉÍÓÚÜÑ][^.!?]*?)(?=\n|$)',
+            r'^([A-ZÁÉÍÓÚÜÑ][^.!?]{3,50})(?=\n|$)',
+            r'^(\d+\.\d+\s*)([A-ZÁÉÍÓÚÜÑ][^.!?]*?)(?=\n|$)',
+        ]
         
-    Example:
-        >>> texto_largo = "Párrafo 1... Párrafo 2... Párrafo 3..."
-        >>> fragmentos = dividir_texto_inteligente(texto_largo, max_palabras=300)
-        >>> print(f"Se crearon {len(fragmentos)} fragmentos")
-    """
-    texto = limpiar_texto(texto)
-    parrafos = [p.strip() for p in texto.split('\n') if p.strip()]
-    
-    fragmentos = []
-    fragmento_actual = []
-    palabras_actuales = 0
-    
-    for parrafo in parrafos:
-        palabras_parrafo = parrafo.split()
+        # Patrones para detectar subsecciones
+        self.subsection_patterns = [
+            r'^([a-záéíóúüñ][^.!?]{3,30})(?=\n|$)',
+            r'^(\d+\.\d+\.\d+\s*)([A-ZÁÉÍÓÚÜÑ][^.!?]*?)(?=\n|$)',
+        ]
+
+    def clean_text(self, text: str) -> str:
+        """
+        Limpia el texto eliminando elementos repetitivos y innecesarios.
         
-        if len(palabras_parrafo) > max_palabras:
-            oraciones = re.split(r'(?<=[.!?])\s+', parrafo)
-            for oracion in oraciones:
-                palabras_oracion = oracion.split()
+        Args:
+            text (str): Texto original a limpiar
+            
+        Returns:
+            str: Texto limpio
+        """
+        # Aplicar patrones de limpieza
+        for pattern in self.patterns_to_remove:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.MULTILINE)
+        
+        # Normalizar espacios
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        
+        return text.strip()
+
+    def detect_sections(self, text: str) -> List[Tuple[str, str, int]]:
+        """
+        Detecta secciones y subsecciones en el texto.
+        
+        Args:
+            text (str): Texto completo
+            
+        Returns:
+            List[Tuple[str, str, int]]: Lista de (título, contenido, página)
+        """
+        sections = []
+        lines = text.split('\n')
+        current_section = "General"
+        current_subsection = "Introducción"
+        current_content = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
                 
-                if palabras_actuales + len(palabras_oracion) <= max_palabras:
-                    fragmento_actual.append(oracion)
-                    palabras_actuales += len(palabras_oracion)
-                else:
-                    if fragmento_actual:
-                        fragmentos.append(' '.join(fragmento_actual))
-                    fragmento_actual = [oracion]
-                    palabras_actuales = len(palabras_oracion)
-        else:
-            if palabras_actuales + len(palabras_parrafo) <= max_palabras:
-                fragmento_actual.append(parrafo)
-                palabras_actuales += len(palabras_parrafo)
+            # Detectar sección principal
+            for pattern in self.section_patterns:
+                match = re.match(pattern, line)
+                if match:
+                    if current_content:
+                        sections.append((current_section, current_subsection, '\n'.join(current_content)))
+                    current_section = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                    current_subsection = "General"
+                    current_content = []
+                    break
             else:
-                if fragmento_actual:
-                    fragmentos.append(' '.join(fragmento_actual))
-                fragmento_actual = [parrafo]
-                palabras_actuales = len(palabras_parrafo)
-    
-    if fragmento_actual and palabras_actuales > 30:
-        fragmentos.append(' '.join(fragmento_actual))
-    
-    return fragmentos
+                # Detectar subsección
+                for pattern in self.subsection_patterns:
+                    match = re.match(pattern, line)
+                    if match:
+                        if current_content:
+                            sections.append((current_section, current_subsection, '\n'.join(current_content)))
+                        current_subsection = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                        current_content = []
+                        break
+                else:
+                    current_content.append(line)
+        
+        # Agregar la última sección
+        if current_content:
+            sections.append((current_section, current_subsection, '\n'.join(current_content)))
+        
+        return sections
 
-def procesar_libro(archivo_docx, nombre_libro, max_palabras=500):
-    """
-    Procesa un libro específico y retorna sus fragmentos con metadatos.
-    
-    Args:
-        archivo_docx (str): Ruta al archivo Word (.docx)
-        nombre_libro (str): Nombre identificador del libro
-        max_palabras (int): Número máximo de palabras por fragmento. Default: 500
+    def create_chunks(self, text: str, max_tokens: int = 800, overlap: float = 0.2) -> List[str]:
+        """
+        Divide el texto en chunks con overlap.
         
-    Returns:
-        List[Dict]: Lista de fragmentos con metadatos
+        Args:
+            text (str): Texto a dividir
+            max_tokens (int): Máximo número de tokens por chunk
+            overlap (float): Porcentaje de overlap entre chunks
+            
+        Returns:
+            List[str]: Lista de chunks
+        """
+        # Estimación simple: 1 token ≈ 1.3 palabras
+        max_words = int(max_tokens / 1.3)
+        overlap_words = int(max_words * overlap)
         
-    Example:
-        >>> fragmentos = procesar_libro("data/libros_word/anatomia.docx", "ANATOMIA")
-        >>> print(f"Procesados {len(fragmentos)} fragmentos")
-    """
-    if not os.path.exists(archivo_docx):
-        print(f"❌ Error: No se encontró el archivo {archivo_docx}")
-        return []
-    
-    try:
-        print(f"📖 Cargando documento: {nombre_libro}")
-        doc = Document(archivo_docx)
-        texto_completo = [p.text for p in doc.paragraphs if p.text.strip()]
-        texto = '\n'.join(texto_completo)
+        words = text.split()
+        chunks = []
         
-        if not texto.strip():
-            print(f"❌ Error: No se pudo extraer texto del documento {nombre_libro}")
+        if len(words) <= max_words:
+            return [text]
+        
+        start = 0
+        while start < len(words):
+            end = min(start + max_words, len(words))
+            chunk_words = words[start:end]
+            
+            # Intentar cortar en una oración completa
+            chunk_text = ' '.join(chunk_words)
+            if end < len(words):
+                # Buscar el último punto, coma o punto y coma
+                last_sentence_end = max(
+                    chunk_text.rfind('.'),
+                    chunk_text.rfind(';'),
+                    chunk_text.rfind(',')
+                )
+                if last_sentence_end > len(chunk_text) * 0.7:  # Si está en el último 30%
+                    chunk_text = chunk_text[:last_sentence_end + 1]
+            
+            chunks.append(chunk_text.strip())
+            start += max_words - overlap_words
+        
+        return chunks
+
+    def extract_from_pdf(self, pdf_path: str, source_name: str) -> List[TextChunk]:
+        """
+        Extrae texto de un PDF y lo procesa en chunks estructurados.
+        
+        Args:
+            pdf_path (str): Ruta al archivo PDF
+            source_name (str): Nombre del documento fuente
+            
+        Returns:
+            List[TextChunk]: Lista de chunks procesados
+        """
+        try:
+            logger.info(f"📖 Procesando: {source_name}")
+            doc = fitz.Document(pdf_path)
+            
+            all_chunks = []
+            chunk_counter = 1
+            
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                text = page.get_text()
+                
+                if not text.strip():
+                    continue
+                
+                # Limpiar texto
+                clean_text = self.clean_text(str(text))
+                
+                # Detectar secciones
+                sections = self.detect_sections(clean_text)
+                
+                for section, subsection, content in sections:
+                    if not str(content).strip():
+                        continue
+                    
+                    # Crear chunks del contenido
+                    chunks = self.create_chunks(str(content))
+                    
+                    for chunk_idx, chunk_text in enumerate(chunks):
+                        if not chunk_text.strip():
+                            continue
+                        
+                        # Crear ID único compatible con Pinecone (solo ASCII)
+                        def clean_id(text):
+                            """Limpia texto para crear ID compatible con Pinecone"""
+                            import unicodedata
+                            # Normalizar caracteres Unicode
+                            text = unicodedata.normalize('NFKD', text)
+                            # Remover acentos y caracteres especiales
+                            text = ''.join(c for c in text if c.isascii() and c.isalnum() or c in '_-')
+                            # Reemplazar espacios y caracteres problemáticos
+                            text = text.replace(' ', '_').replace('-', '_').replace(',', '').replace('.', '')
+                            # Limitar longitud y asegurar que empiece con letra
+                            if text and not text[0].isalpha():
+                                text = 'f_' + text
+                            return text[:50]  # Limitar longitud
+                        
+                        clean_source = clean_id(source_name)
+                        clean_section = clean_id(section)
+                        chunk_id = f"{clean_source}_{clean_section}_{chunk_counter:03d}"
+                        
+                        # Crear objeto TextChunk
+                        text_chunk = TextChunk(
+                            id=chunk_id,
+                            source=source_name,
+                            section=section,
+                            subsection=subsection,
+                            page_number=page_num + 1,
+                            text=chunk_text,
+                            metadata={
+                                "file_name": os.path.basename(pdf_path),
+                                "chunk_index": chunk_idx + 1,
+                                "total_chunks": len(chunks),
+                                "word_count": len(chunk_text.split()),
+                                "section": section,
+                                "subsection": subsection
+                            }
+                        )
+                        
+                        all_chunks.append(text_chunk)
+                        chunk_counter += 1
+            
+            doc.close()
+            logger.info(f"✅ Extraídos {len(all_chunks)} chunks de {source_name}")
+            return all_chunks
+            
+        except Exception as e:
+            logger.error(f"❌ Error procesando {source_name}: {e}")
+            return []
+
+    def process_ana_fun_content(self) -> List[Dict[str, Any]]:
+        """
+        Procesa todo el contenido de la carpeta ana_fun.
+        
+        Returns:
+            List[Dict[str, Any]]: Lista de chunks en formato JSON
+        """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        ana_fun_dir = os.path.join(project_root, "data", "ana_fun")
+        
+        if not os.path.exists(ana_fun_dir):
+            logger.error(f"❌ No se encontró la carpeta: {ana_fun_dir}")
             return []
         
-        print(f"✅ Texto extraído de {nombre_libro}: {len(texto.split())} palabras")
+        all_chunks = []
         
-        print("✂️ Creando fragmentos...")
-        fragmentos_texto = dividir_texto_inteligente(texto, max_palabras)
+        # Procesar diapositivas
+        diapos_dir = os.path.join(ana_fun_dir, "diapos")
+        if os.path.exists(diapos_dir):
+            logger.info("📚 Procesando diapositivas...")
+            for file in os.listdir(diapos_dir):
+                if file.lower().endswith('.pdf'):
+                    pdf_path = os.path.join(diapos_dir, file)
+                    source_name = f"Diapositivas - {os.path.splitext(file)[0]}"
+                    chunks = self.extract_from_pdf(pdf_path, source_name)
+                    all_chunks.extend(chunks)
         
-        # Crear fragmentos con metadatos
-        fragmentos_con_metadata = []
-        for idx, frag in enumerate(fragmentos_texto):
-            palabras_frag = len(frag.split())
-            fragmento_id = f"{nombre_libro}_fragmento_{idx+1:04d}"
-            
-            fragmento_data = {
-                "id": fragmento_id,
-                "texto": frag,
-                "libro": nombre_libro,
-                "palabras": palabras_frag,
-                "indice": idx + 1
+        # Procesar manual
+        man_dir = os.path.join(ana_fun_dir, "man")
+        if os.path.exists(man_dir):
+            logger.info("📖 Procesando manual...")
+            for file in os.listdir(man_dir):
+                if file.lower().endswith('.pdf'):
+                    pdf_path = os.path.join(man_dir, file)
+                    source_name = "Complemento Anatomía Funcional Humana"
+                    chunks = self.extract_from_pdf(pdf_path, source_name)
+                    all_chunks.extend(chunks)
+        
+        # Convertir a formato JSON
+        json_chunks = []
+        for chunk in all_chunks:
+            json_chunk = {
+                "id": chunk.id,
+                "source": chunk.source,
+                "section": chunk.section,
+                "subsection": chunk.subsection,
+                "page_number": chunk.page_number,
+                "text": chunk.text,
+                "metadata": chunk.metadata
             }
-            fragmentos_con_metadata.append(fragmento_data)
+            json_chunks.append(json_chunk)
         
-        print(f"✅ Se crearon {len(fragmentos_con_metadata)} fragmentos para {nombre_libro}")
-        return fragmentos_con_metadata
-        
-    except Exception as e:
-        print(f"❌ Error al procesar {nombre_libro}: {str(e)}")
-        return []
+        return json_chunks
 
 def main():
     """
-    Función principal que procesa múltiples libros de anatomía.
-    
-    Esta función:
-    1. Detecta automáticamente todos los archivos .docx en la carpeta libros_word
-    2. Procesa cada libro individualmente
-    3. Combina todos los fragmentos
-    4. Genera archivo de metadatos JSON con texto completo
-    5. Proporciona estadísticas detalladas
-    
-    Los libros se procesan automáticamente sin necesidad de configuración manual.
+    Función principal que ejecuta el procesamiento completo.
     """
-    # Obtener la ruta del directorio raíz del proyecto
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    libros_dir = os.path.join(project_root, "data", "libros_word")
-    
-    # Verificar que existe la carpeta de libros
-    if not os.path.exists(libros_dir):
-        print(f"❌ Error: No se encontró la carpeta de libros en {libros_dir}")
-        return
-    
-    # Detectar automáticamente todos los archivos .docx
-    archivos_docx = []
-    for archivo in os.listdir(libros_dir):
-        if archivo.lower().endswith('.docx'):
-            ruta_completa = os.path.join(libros_dir, archivo)
-            nombre_libro = os.path.splitext(archivo)[0]  # Remover extensión .docx
-            archivos_docx.append({
-                "archivo": ruta_completa,
-                "nombre": nombre_libro
-            })
-    
-    if not archivos_docx:
-        print(f"❌ No se encontraron archivos .docx en {libros_dir}")
-        return
-    
-    print(f"📚 Se encontraron {len(archivos_docx)} libros para procesar:")
-    for libro in archivos_docx:
-        print(f"   - {libro['nombre']}")
-    
-    max_palabras = 500
-    todos_los_fragmentos = []
-    
-    print("\n🚀 Iniciando procesamiento de múltiples libros...")
-    
-    # Procesar cada libro
-    for libro_config in archivos_docx:
-        archivo = libro_config["archivo"]
-        nombre = libro_config["nombre"]
+    try:
+        logger.info("🚀 Iniciando extracción mejorada de texto...")
         
-        fragmentos = procesar_libro(archivo, nombre, max_palabras)
-        todos_los_fragmentos.extend(fragmentos)
-    
-    if not todos_los_fragmentos:
-        print("❌ No se pudieron procesar fragmentos de ningún libro")
-        return
-    
-    # Guardar metadatos completos con texto incluido
-    metadata_file = os.path.join(project_root, "data", "fragmentos_metadata.json")
-    with open(metadata_file, "w", encoding="utf-8") as f:
-        json.dump(todos_los_fragmentos, f, ensure_ascii=False, indent=2)
-    
-    # Estadísticas por libro
-    libros_stats = {}
-    for fragmento in todos_los_fragmentos:
-        libro = fragmento["libro"]
-        if libro not in libros_stats:
-            libros_stats[libro] = {"fragmentos": 0, "palabras": 0}
-        libros_stats[libro]["fragmentos"] += 1
-        libros_stats[libro]["palabras"] += fragmento["palabras"]
-    
-    print(f"\n🎉 Procesamiento completado exitosamente")
-    print(f"📊 Estadísticas generales:")
-    print(f"   - Total de fragmentos: {len(todos_los_fragmentos)}")
-    print(f"   - Total de palabras: {sum(f['palabras'] for f in todos_los_fragmentos)}")
-    
-    print(f"\n📚 Estadísticas por libro:")
-    for libro, stats in libros_stats.items():
-        print(f"   - {libro}: {stats['fragmentos']} fragmentos, {stats['palabras']} palabras")
-    
-    print(f"\n💾 Archivo generado:")
-    print(f"   - Metadatos completos con texto en '{metadata_file}'")
+        extractor = TextExtractor()
+        chunks = extractor.process_ana_fun_content()
+        
+        if not chunks:
+            logger.error("❌ No se pudieron procesar chunks")
+            return False
+        
+        # Guardar en archivo JSON
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        output_file = os.path.join(project_root, "data", "fragmentos_mejorados.json")
+        
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, ensure_ascii=False, indent=2)
+        
+        # Estadísticas
+        sources = set(chunk["source"] for chunk in chunks)
+        sections = set(chunk["section"] for chunk in chunks)
+        total_words = sum(chunk["metadata"]["word_count"] for chunk in chunks)
+        
+        logger.info(f"🎉 Procesamiento completado exitosamente")
+        logger.info(f"📊 Estadísticas:")
+        logger.info(f"   - Total de chunks: {len(chunks)}")
+        logger.info(f"   - Total de palabras: {total_words}")
+        logger.info(f"   - Fuentes: {len(sources)}")
+        logger.info(f"   - Secciones: {len(sections)}")
+        logger.info(f"💾 Archivo guardado: {output_file}")
+        
+        # Mostrar algunas estadísticas por fuente
+        for source in sources:
+            source_chunks = [c for c in chunks if c["source"] == source]
+            source_words = sum(c["metadata"]["word_count"] for c in source_chunks)
+            logger.info(f"   - {source}: {len(source_chunks)} chunks, {source_words} palabras")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error inesperado: {e}")
+        return False
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    if not success:
+        exit(1) 

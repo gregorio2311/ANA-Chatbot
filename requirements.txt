@@ -3,4 +3,5 @@ sentence-transformers==5.0.0
 torch==2.7.1+cu118
 pinecone==7.3.0
 python-dotenv==1.0.0
-huggingface-hub==0.33.2 
+huggingface-hub==0.33.2
+PyMuPDF==1.23.26 
